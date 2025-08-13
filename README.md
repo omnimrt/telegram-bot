@@ -5,22 +5,24 @@ A Python Telegram bot for managing film voting with SQLite database storage. Use
 ## Features
 
 - **Film Management**: Add films to the database (admin only)
-- **Voting System**: Vote on films with "Seen" or "Not Seen" options
-- **Duplicate Prevention**: Users can only vote once per film
+- **Round-Based Voting**: Each user can vote for ONE film per round
+- **Private Vote Confirmations**: Vote confirmations sent via private message (DM)
 - **Scoring System**: 
   - Seen films: 0.5 points
   - Not seen films: 1.0 points
-- **Results Display**: View all films sorted by score
+- **Results Display**: View all films sorted by score for current round
 - **Winner Announcement**: See the top-scoring film with trophy emoji
+- **Round Management**: Admins can create new voting rounds
 - **Inline Buttons**: Easy voting with tap-to-vote buttons
 
 ## Commands
 
 - `/start` - Welcome message and command list
 - `/addfilm <film name>` - Add a new film (Admin only)
-- `/vote` - Show all films with voting buttons
-- `/results` - Display all films sorted by score
-- `/winner` - Show the top-scoring film
+- `/vote` - Vote for ONE film in the current round
+- `/results` - Display all films sorted by score for current round
+- `/winner` - Show the top-scoring film for current round
+- `/newround <name>` - Create a new voting round (Admin only)
 
 ## Setup Instructions
 
@@ -86,16 +88,23 @@ This script will:
 
 ## Database Schema
 
-The bot uses SQLite with two tables:
+The bot uses SQLite with three tables:
 
 ### Films Table
 - `id` (INTEGER PRIMARY KEY)
 - `title` (TEXT UNIQUE)
 
+### Rounds Table
+- `id` (INTEGER PRIMARY KEY)
+- `name` (TEXT)
+- `is_active` (BOOLEAN)
+- `created_at` (TIMESTAMP)
+
 ### Votes Table
 - `id` (INTEGER PRIMARY KEY)
 - `user_id` (INTEGER)
 - `film_id` (INTEGER)
+- `round_id` (INTEGER)
 - `seen` (BOOLEAN)
 - `created_at` (TIMESTAMP)
 
@@ -103,8 +112,8 @@ The bot uses SQLite with two tables:
 
 - **Seen films**: 0.5 points per vote
 - **Not seen films**: 1.0 points per vote
-- **Duplicate prevention**: Users can only vote once per film
-- **Results**: Films are sorted by total score (highest first)
+- **Round-based voting**: Users can only vote once per round
+- **Results**: Films are sorted by total score for current round (highest first)
 
 ## Usage Examples
 
@@ -116,13 +125,18 @@ The bot uses SQLite with two tables:
 ```
 
 ### Voting
-1. Type `/vote` to see all available films
-2. Tap "👁️ Seen" or "❌ Not Seen" for each film
-3. The bot will confirm your vote and update the interface
+1. Type `/vote` to see all available films for the current round
+2. Choose ONE film and tap "👁️ Seen" or "❌ Not Seen"
+3. The bot will send a confirmation via private message (DM)
+4. You can only vote once per round
+
+### Round Management
+- `/newround <name>` - Create a new voting round (Admin only)
+- Users can vote again when a new round is created
 
 ### Viewing Results
-- `/results` - See all films with scores
-- `/winner` - See the top-scoring film
+- `/results` - See all films with scores for current round
+- `/winner` - See the top-scoring film for current round
 
 ## File Structure
 
@@ -160,8 +174,10 @@ telegram-bot/
 - If you need to reset, delete `film_voting.db` and restart the bot
 
 ### Voting Issues
-- Each user can only vote once per film
-- Use `/vote` to see your voting status for each film
+- Each user can only vote once per round
+- Vote confirmations are sent via private message
+- If private message fails, confirmation will be shown in the group
+- Use `/vote` to see available films for the current round
 
 ## Contributing
 

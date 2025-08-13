@@ -25,18 +25,35 @@ class TestFilmVotingBot:
             )
         ''')
         
-        # Create votes table
+        # Create rounds table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS rounds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Create votes table with round support
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS votes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 film_id INTEGER NOT NULL,
+                round_id INTEGER NOT NULL,
                 seen BOOLEAN NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, film_id),
-                FOREIGN KEY (film_id) REFERENCES films (id)
+                UNIQUE(user_id, round_id),
+                FOREIGN KEY (film_id) REFERENCES films (id),
+                FOREIGN KEY (round_id) REFERENCES rounds (id)
             )
         ''')
+        
+        # Create default active round if none exists
+        cursor.execute('SELECT COUNT(*) FROM rounds WHERE is_active = 1')
+        if cursor.fetchone()[0] == 0:
+            cursor.execute('INSERT INTO rounds (name, is_active) VALUES (?, ?)', ('Round 1', 1))
         
         conn.commit()
         conn.close()
@@ -67,41 +84,60 @@ class TestFilmVotingBot:
         conn.close()
         return films
     
-    def has_user_voted(self, user_id: int, film_id: int) -> bool:
-        """Check if user has already voted for a film."""
+    def get_active_round(self) -> int:
+        """Get the currently active round ID."""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM rounds WHERE is_active = 1")
+        result = cursor.fetchone()
+        conn.close()
+        return result[0] if result else None
+    
+    def has_user_voted_in_round(self, user_id: int, round_id: int) -> bool:
+        """Check if user has already voted in the current round."""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT COUNT(*) FROM votes WHERE user_id = ? AND film_id = ?",
-            (user_id, film_id)
+            "SELECT COUNT(*) FROM votes WHERE user_id = ? AND round_id = ?",
+            (user_id, round_id)
         )
         count = cursor.fetchone()[0]
         conn.close()
         return count > 0
     
     def add_vote(self, user_id: int, film_id: int, seen: bool) -> bool:
-        """Add a vote for a film."""
+        """Add a vote for a film in the current round."""
         try:
             conn = sqlite3.connect(self.db_name)
             cursor = conn.cursor()
+            
+            # Get active round
+            round_id = self.get_active_round()
+            if not round_id:
+                print("❌ No active round found")
+                return False
+            
             cursor.execute(
-                "INSERT INTO votes (user_id, film_id, seen) VALUES (?, ?, ?)",
-                (user_id, film_id, seen)
+                "INSERT INTO votes (user_id, film_id, round_id, seen) VALUES (?, ?, ?, ?)",
+                (user_id, film_id, round_id, seen)
             )
             conn.commit()
             conn.close()
             return True
         except sqlite3.IntegrityError:
-            print(f"⚠️  User {user_id} has already voted for film {film_id}")
+            print(f"⚠️  User {user_id} has already voted in round {round_id}")
             return False
         except Exception as e:
             print(f"❌ Error adding vote: {e}")
             return False
     
-    def get_results(self):
-        """Get all films with their scores, sorted by highest first."""
+    def get_results(self, round_id: int = None):
+        """Get all films with their scores for a specific round, sorted by highest first."""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
+        
+        if round_id is None:
+            round_id = self.get_active_round()
         
         cursor.execute('''
             SELECT f.title, 
@@ -113,18 +149,18 @@ class TestFilmVotingBot:
                        END
                    ), 0) as total_score
             FROM films f
-            LEFT JOIN votes v ON f.id = v.film_id
+            LEFT JOIN votes v ON f.id = v.film_id AND v.round_id = ?
             GROUP BY f.id, f.title
             ORDER BY total_score DESC
-        ''')
+        ''', (round_id,))
         
         results = cursor.fetchall()
         conn.close()
         return results
     
-    def get_winner(self):
-        """Get the top-scoring film."""
-        results = self.get_results()
+    def get_winner(self, round_id: int = None):
+        """Get the top-scoring film for a specific round."""
+        results = self.get_results(round_id)
         return results[0] if results else (None, 0.0)
     
     def cleanup(self):
@@ -171,30 +207,31 @@ def test_database():
     test_user_id = 12345
     films = bot.get_all_films()
     
-    for film_id, title in films[:3]:  # Test first 3 films
-        # Test seen vote
-        success = bot.add_vote(test_user_id, film_id, True)
-        if success:
-            print(f"✅ Voted 'Seen' for: {title}")
-        else:
-            print(f"❌ Failed to vote 'Seen' for: {title}")
-        
-        # Test duplicate vote prevention
-        success = bot.add_vote(test_user_id, film_id, False)
-        if not success:
-            print(f"✅ Duplicate vote prevention working for: {title}")
-        else:
-            print(f"❌ Duplicate vote prevention failed for: {title}")
+    # Test first user voting (should succeed)
+    film_id, title = films[0]
+    success = bot.add_vote(test_user_id, film_id, True)
+    if success:
+        print(f"✅ User 1 voted 'Seen' for: {title}")
+    else:
+        print(f"❌ Failed to vote 'Seen' for: {title}")
+    
+    # Test duplicate vote prevention (should fail)
+    film_id, title = films[1]
+    success = bot.add_vote(test_user_id, film_id, False)
+    if not success:
+        print(f"✅ Duplicate vote prevention working for user 1")
+    else:
+        print(f"❌ Duplicate vote prevention failed for user 1")
     
     # Test another user voting
     print("\n5. Testing multiple users...")
     test_user_id_2 = 67890
-    for film_id, title in films[3:]:  # Test last 2 films
-        success = bot.add_vote(test_user_id_2, film_id, False)
-        if success:
-            print(f"✅ User 2 voted 'Not Seen' for: {title}")
-        else:
-            print(f"❌ User 2 failed to vote for: {title}")
+    film_id, title = films[1]
+    success = bot.add_vote(test_user_id_2, film_id, False)
+    if success:
+        print(f"✅ User 2 voted 'Not Seen' for: {title}")
+    else:
+        print(f"❌ User 2 failed to vote for: {title}")
     
     # Test results
     print("\n6. Testing results calculation...")

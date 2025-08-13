@@ -69,18 +69,35 @@ class FilmVotingBot:
             )
         ''')
         
-        # Create votes table
+        # Create rounds table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS rounds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Create votes table with round support
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS votes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 film_id INTEGER NOT NULL,
+                round_id INTEGER NOT NULL,
                 seen BOOLEAN NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, film_id),
-                FOREIGN KEY (film_id) REFERENCES films (id)
+                UNIQUE(user_id, round_id),
+                FOREIGN KEY (film_id) REFERENCES films (id),
+                FOREIGN KEY (round_id) REFERENCES rounds (id)
             )
         ''')
+        
+        # Create default active round if none exists
+        cursor.execute('SELECT COUNT(*) FROM rounds WHERE is_active = 1')
+        if cursor.fetchone()[0] == 0:
+            cursor.execute('INSERT INTO rounds (name, is_active) VALUES (?, ?)', ('Round 1', 1))
         
         conn.commit()
         conn.close()
@@ -120,41 +137,60 @@ class FilmVotingBot:
         conn.close()
         return result[0] if result else None
     
-    def has_user_voted(self, user_id: int, film_id: int) -> bool:
-        """Check if user has already voted for a film."""
+    def get_active_round(self) -> int:
+        """Get the currently active round ID."""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM rounds WHERE is_active = 1")
+        result = cursor.fetchone()
+        conn.close()
+        return result[0] if result else None
+    
+    def has_user_voted_in_round(self, user_id: int, round_id: int) -> bool:
+        """Check if user has already voted in the current round."""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT COUNT(*) FROM votes WHERE user_id = ? AND film_id = ?",
-            (user_id, film_id)
+            "SELECT COUNT(*) FROM votes WHERE user_id = ? AND round_id = ?",
+            (user_id, round_id)
         )
         count = cursor.fetchone()[0]
         conn.close()
         return count > 0
     
     def add_vote(self, user_id: int, film_id: int, seen: bool) -> bool:
-        """Add a vote for a film."""
+        """Add a vote for a film in the current round."""
         try:
             conn = sqlite3.connect(self.db_name)
             cursor = conn.cursor()
+            
+            # Get active round
+            round_id = self.get_active_round()
+            if not round_id:
+                logger.error("No active round found")
+                return False
+            
             cursor.execute(
-                "INSERT INTO votes (user_id, film_id, seen) VALUES (?, ?, ?)",
-                (user_id, film_id, seen)
+                "INSERT INTO votes (user_id, film_id, round_id, seen) VALUES (?, ?, ?, ?)",
+                (user_id, film_id, round_id, seen)
             )
             conn.commit()
             conn.close()
             return True
         except sqlite3.IntegrityError:
-            logger.warning(f"User {user_id} has already voted for film {film_id}")
+            logger.warning(f"User {user_id} has already voted in round {round_id}")
             return False
         except Exception as e:
             logger.error(f"Error adding vote: {e}")
             return False
     
-    def get_results(self) -> List[Tuple[str, float]]:
-        """Get all films with their scores, sorted by highest first."""
+    def get_results(self, round_id: int = None) -> List[Tuple[str, float]]:
+        """Get all films with their scores for a specific round, sorted by highest first."""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
+        
+        if round_id is None:
+            round_id = self.get_active_round()
         
         cursor.execute('''
             SELECT f.title, 
@@ -166,19 +202,50 @@ class FilmVotingBot:
                        END
                    ), 0) as total_score
             FROM films f
-            LEFT JOIN votes v ON f.id = v.film_id
+            LEFT JOIN votes v ON f.id = v.film_id AND v.round_id = ?
             GROUP BY f.id, f.title
             ORDER BY total_score DESC
-        ''')
+        ''', (round_id,))
         
         results = cursor.fetchall()
         conn.close()
         return results
     
-    def get_winner(self) -> Tuple[str, float]:
-        """Get the top-scoring film."""
-        results = self.get_results()
+    def get_winner(self, round_id: int = None) -> Tuple[str, float]:
+        """Get the top-scoring film for a specific round."""
+        results = self.get_results(round_id)
         return results[0] if results else (None, 0.0)
+    
+    def create_new_round(self, name: str) -> bool:
+        """Create a new round and deactivate the current one."""
+        try:
+            conn = sqlite3.connect(self.db_name)
+            cursor = conn.cursor()
+            
+            # Deactivate current active round
+            cursor.execute("UPDATE rounds SET is_active = 0 WHERE is_active = 1")
+            
+            # Create new round
+            cursor.execute("INSERT INTO rounds (name, is_active) VALUES (?, 1)", (name,))
+            
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error creating new round: {e}")
+            return False
+    
+    def get_round_info(self, round_id: int = None) -> Tuple[int, str]:
+        """Get round information."""
+        if round_id is None:
+            round_id = self.get_active_round()
+        
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name FROM rounds WHERE id = ?", (round_id,))
+        result = cursor.fetchone()
+        conn.close()
+        return result if result else (None, None)
 
 
 # Global bot instance
@@ -205,10 +272,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 I help you vote on films and track which ones are most popular.
 
 Available commands:
-• /vote - Vote on films (Seen/Not Seen)
-• /results - View all films and their scores
-• /winner - See the top-scoring film
+• /vote - Vote for ONE film in the current round
+• /results - View all films and their scores for current round
+• /winner - See the top-scoring film for current round
 • /addfilm <title> - Add a new film (Admin only)
+• /newround <name> - Create a new voting round (Admin only)
 
 Get started by typing /vote to see available films!
     """
@@ -235,37 +303,43 @@ async def add_film(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def vote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show all films with voting buttons."""
+    """Show all films with voting buttons for the current round."""
     films = bot.get_all_films()
     
     if not films:
         await update.message.reply_text("📝 No films available. Ask an admin to add some films!")
         return
     
+    # Get current round info
+    round_id, round_name = bot.get_round_info()
+    user_id = update.effective_user.id
+    
+    # Check if user has already voted in this round
+    has_voted_in_round = bot.has_user_voted_in_round(user_id, round_id)
+    
+    if has_voted_in_round:
+        # User already voted in this round
+        await update.message.reply_text(
+            f"✅ You have already voted in {round_name}!\n\n"
+            f"Use /results to see current standings or wait for the next round."
+        )
+        return
+    
     keyboard = []
     for film_id, title in films:
-        # Check if user has already voted
-        user_id = update.effective_user.id
-        has_voted = bot.has_user_voted(user_id, film_id)
-        
-        if has_voted:
-            # Show voted status
-            keyboard.append([
-                InlineKeyboardButton(f"✅ {title} (Voted)", callback_data=f"voted_{film_id}")
-            ])
-        else:
-            # Show voting buttons
-            keyboard.append([
-                InlineKeyboardButton("👁️ Seen", callback_data=f"vote_{film_id}_1"),
-                InlineKeyboardButton("❌ Not Seen", callback_data=f"vote_{film_id}_0")
-            ])
-            keyboard.append([
-                InlineKeyboardButton(f"📽️ {title}", callback_data=f"info_{film_id}")
-            ])
+        # Show voting buttons for each film
+        keyboard.append([
+            InlineKeyboardButton("👁️ Seen", callback_data=f"vote_{film_id}_1"),
+            InlineKeyboardButton("❌ Not Seen", callback_data=f"vote_{film_id}_0")
+        ])
+        keyboard.append([
+            InlineKeyboardButton(f"📽️ {title}", callback_data=f"info_{film_id}")
+        ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🎬 Vote on films! Tap 'Seen' or 'Not Seen' for each film:",
+        f"🎬 Vote for {round_name}!\n\n"
+        f"Choose ONE film to vote on. Tap 'Seen' or 'Not Seen':",
         reply_markup=reply_markup
     )
 
@@ -286,23 +360,39 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         if bot.add_vote(user_id, film_id, seen):
             film_title = bot.get_film_by_id(film_id)
+            round_id, round_name = bot.get_round_info()
             status = "Seen" if seen else "Not Seen"
-            await query.edit_message_text(
-                f"✅ Vote recorded! You marked '{film_title}' as {status}.\n\n"
-                f"Use /vote to vote on more films or /results to see current standings."
-            )
+            
+            # Send confirmation via private message
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"✅ Vote Confirmation for {round_name}!\n\n"
+                         f"🎬 Film: {film_title}\n"
+                         f"👁️ Status: {status}\n\n"
+                         f"Your vote has been recorded successfully!"
+                )
+                
+                # Update the group message to show vote was recorded
+                await query.edit_message_text(
+                    f"✅ Vote recorded for {round_name}!\n\n"
+                    f"📱 Check your private messages for confirmation.\n\n"
+                    f"Use /results to see current standings."
+                )
+            except Exception as e:
+                # If private message fails, show confirmation in group
+                logger.warning(f"Could not send private message to user {user_id}: {e}")
+                await query.edit_message_text(
+                    f"✅ Vote recorded for {round_name}!\n\n"
+                    f"🎬 Film: {film_title}\n"
+                    f"👁️ Status: {status}\n\n"
+                    f"Use /results to see current standings."
+                )
         else:
             await query.edit_message_text(
-                "❌ You have already voted for this film!\n\n"
-                f"Use /vote to vote on other films or /results to see current standings."
+                f"❌ You have already voted in this round!\n\n"
+                f"Use /results to see current standings."
             )
-    
-    elif data.startswith("voted_"):
-        # User already voted for this film
-        await query.edit_message_text(
-            "✅ You have already voted for this film!\n\n"
-            f"Use /vote to vote on other films or /results to see current standings."
-        )
     
     elif data.startswith("info_"):
         # Show film info
@@ -315,38 +405,58 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show all films with their scores."""
-    results = bot.get_results()
+    """Show all films with their scores for the current round."""
+    round_id, round_name = bot.get_round_info()
+    results = bot.get_results(round_id)
     
     if not results:
         await update.message.reply_text("📝 No films available. Ask an admin to add some films!")
         return
     
-    message = "🏆 Film Voting Results 🏆\n\n"
+    message = f"🏆 Film Voting Results - {round_name} 🏆\n\n"
     
     for i, (title, score) in enumerate(results, 1):
         trophy = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "📊"
         message += f"{trophy} {title}: {score:.1f} points\n"
     
-    message += "\n💡 Scoring: Seen = 0.5 points, Not Seen = 1.0 points"
+    message += f"\n💡 Scoring: Seen = 0.5 points, Not Seen = 1.0 points"
     
     await update.message.reply_text(message)
 
 
 async def winner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show the top-scoring film."""
-    winner_title, winner_score = bot.get_winner()
+    """Show the top-scoring film for the current round."""
+    round_id, round_name = bot.get_round_info()
+    winner_title, winner_score = bot.get_winner(round_id)
     
     if not winner_title:
         await update.message.reply_text("📝 No films available. Ask an admin to add some films!")
         return
     
-    message = f"🏆 WINNER 🏆\n\n"
+    message = f"🏆 WINNER - {round_name} 🏆\n\n"
     message += f"👑 {winner_title}\n"
     message += f"📊 Score: {winner_score:.1f} points\n\n"
     message += f"🎉 Congratulations to the winning film!"
     
     await update.message.reply_text(message)
+
+
+async def new_round(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Create a new voting round (Admin only)."""
+    if not await is_user_admin(update, context):
+        await update.message.reply_text("❌ Sorry, only admins can create new rounds.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Please provide a round name: /newround <round name>")
+        return
+    
+    round_name = " ".join(context.args)
+    
+    if bot.create_new_round(round_name):
+        await update.message.reply_text(f"✅ New round '{round_name}' created successfully!\n\nUsers can now vote again with /vote")
+    else:
+        await update.message.reply_text(f"❌ Could not create new round '{round_name}'.")
 
 
 def main() -> None:
@@ -360,6 +470,7 @@ def main() -> None:
     application.add_handler(CommandHandler("vote", vote))
     application.add_handler(CommandHandler("results", results))
     application.add_handler(CommandHandler("winner", winner))
+    application.add_handler(CommandHandler("newround", new_round))
     
     # Add callback query handler for buttons
     application.add_handler(CallbackQueryHandler(button_callback))
