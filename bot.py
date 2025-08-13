@@ -336,12 +336,12 @@ async def is_user_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a welcome message when the command /start is issued."""
     welcome_text = """
-🎬 **Welcome to the Film Voting Bot!** 🎬
+Hi! I'm the Film Voting Bot 🎬
 
-I help you vote on films and track which ones are most popular.
+When you type /vote in the group chat, I'll send you a private message with the list of movies. You can vote only once. After you vote, I'll let the group know you've voted (but not what you picked).
 
 **📱 User Commands:**
-• `/vote` - Vote for ONE film in the current round (sent to DM)
+• `/vote` - Vote for ONE film in the current round
 • `/results` - View all films and their scores for current round
 • `/winner` - See the top-scoring film for current round
 • `/listfilms` - List all available films
@@ -350,17 +350,9 @@ I help you vote on films and track which ones are most popular.
 • `/addfilm <title>` - Add a new film
 • `/deletefilm <title>` - Delete a film from the database
 • `/newround <name>` - Create a new voting round
-
-**💡 How to vote:**
-1. Type `/vote` in the group
-2. Check your private messages (DM)
-3. Choose ONE movie and tap "Seen" or "Unseen"
-4. Get confirmation with vote counts
-
-Get started by typing `/vote` to begin voting!
     """
     
-    await update.message.reply_text(welcome_text.strip(), parse_mode='Markdown')
+    await update.message.reply_text(welcome_text.strip())
 
 
 async def add_film(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -382,7 +374,7 @@ async def add_film(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def vote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show all films as a clean poll interface in DM."""
+    """Send voting interface directly to DM without group notification."""
     films = bot.get_all_films()
     
     if not films:
@@ -404,30 +396,35 @@ async def vote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     
-    # Create clean poll interface
-    poll_message = f"🎬 **{round_name} - Movie Voting Poll** 🎬\n\n"
-    poll_message += "Choose ONE movie to vote on:\n\n"
+    # Create voting interface
+    poll_message = f"🎬 **{round_name} - Movie Voting** 🎬\n\n"
+    poll_message += "Mark each movie as Seen or Unseen, then vote for ONE movie:\n\n"
     
     keyboard = []
     for i, (film_id, title) in enumerate(films, 1):
         # Add movie option with number
         poll_message += f"**{i}.** 🎭 {title}\n"
         
-        # Add voting buttons for this movie
+        # Add Seen/Unseen buttons for this movie
         keyboard.append([
-            InlineKeyboardButton(f"👁️ Seen", callback_data=f"vote_{film_id}_1"),
-            InlineKeyboardButton(f"❌ Unseen", callback_data=f"vote_{film_id}_0")
+            InlineKeyboardButton(f"Seen ✅", callback_data=f"mark_{film_id}_1"),
+            InlineKeyboardButton(f"Unseen ❌", callback_data=f"mark_{film_id}_0")
         ])
         
         # Add separator between movies (except for last one)
         if i < len(films):
             poll_message += "━━━━━━━━━━━━━━━━━━━━\n"
     
-    poll_message += "\n💡 *You can only vote for ONE movie per round*"
+    # Add vote button at the bottom
+    keyboard.append([
+        InlineKeyboardButton("Vote for this movie 🎯", callback_data="submit_vote")
+    ])
+    
+    poll_message += "\n💡 *Mark each movie's status, then click 'Vote for this movie'*"
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Send poll to user's DM
+    # Send voting interface to user's DM
     try:
         await context.bot.send_message(
             chat_id=user_id,
@@ -436,11 +433,16 @@ async def vote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             reply_markup=reply_markup
         )
         
-        # Confirm in group that poll was sent
-        await update.message.reply_text(
-            f"📱 **Poll sent to your private messages!**\n\n"
-            f"Check your DM to vote for {round_name}."
-        )
+        # Store the voting session in context
+        if 'voting_sessions' not in context.bot_data:
+            context.bot_data['voting_sessions'] = {}
+        
+        context.bot_data['voting_sessions'][user_id] = {
+            'round_id': round_id,
+            'marks': {},
+            'message_id': None,
+            'vote_chat_id': update.effective_chat.id
+        }
         
     except Exception as e:
         logger.warning(f"Could not send DM to user {user_id}: {e}")
@@ -460,68 +462,155 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     data = query.data
     user_id = update.effective_user.id
     
-    if data.startswith("vote_"):
-        # Handle voting
+    if data.startswith("mark_"):
+        # Handle marking movies as Seen/Unseen
         parts = data.split("_")
         film_id = int(parts[1])
         seen = bool(int(parts[2]))
+        
+        # Get or create voting session
+        if 'voting_sessions' not in context.bot_data:
+            context.bot_data['voting_sessions'] = {}
+        
+        if user_id not in context.bot_data['voting_sessions']:
+            await query.edit_message_text("❌ Voting session expired. Please use /vote again.")
+            return
+        
+        session = context.bot_data['voting_sessions'][user_id]
+        session['marks'][film_id] = seen
+        
+        # Update the voting interface to show current marks
+        await update_voting_interface(query, context, user_id, session)
+    
+    elif data == "submit_vote":
+        # Handle submitting the vote
+        if 'voting_sessions' not in context.bot_data or user_id not in context.bot_data['voting_sessions']:
+            await query.edit_message_text("❌ Voting session expired. Please use /vote again.")
+            return
+        
+        session = context.bot_data['voting_sessions'][user_id]
+        
+        if not session['marks']:
+            await query.answer("❌ Please mark at least one movie before voting!")
+            return
+        
+        # Check if user has already voted in this round
+        if bot.has_user_voted_in_round(user_id, session['round_id']):
+            await query.edit_message_text(
+                f"❌ **Already Voted!** ❌\n\n"
+                f"You have already voted in this round.\n\n"
+                f"Use /results to see current standings."
+            )
+            # Clean up the voting session
+            if user_id in context.bot_data['voting_sessions']:
+                del context.bot_data['voting_sessions'][user_id]
+            return
+        
+        # Get the first marked movie (user can only vote for one)
+        film_id = list(session['marks'].keys())[0]
+        seen = session['marks'][film_id]
         
         if bot.add_vote(user_id, film_id, seen):
             film_title = bot.get_film_by_id(film_id)
             round_id, round_name = bot.get_round_info()
             status = "Seen" if seen else "Unseen"
             
-            # Get current vote counts for this movie
-            vote_counts = bot.get_vote_counts_for_film(film_id, round_id)
+            # Get user's name for group notification
+            user_name = update.effective_user.first_name
+            if update.effective_user.last_name:
+                user_name += f" {update.effective_user.last_name}"
             
-            # Create confirmation message with vote counts
+            # Send confirmation to DM
             confirmation_message = f"✅ **Vote Confirmation - {round_name}** ✅\n\n"
             confirmation_message += f"🎬 **Movie:** {film_title}\n"
             confirmation_message += f"👁️ **Your Vote:** {status}\n\n"
-            confirmation_message += "📊 **Current Vote Counts:**\n"
-            confirmation_message += f"   👁️ Seen: {vote_counts['seen']} votes\n"
-            confirmation_message += f"   ❌ Unseen: {vote_counts['unseen']} votes\n"
-            confirmation_message += f"   📈 Total: {vote_counts['total']} votes\n\n"
             confirmation_message += "🎉 *Your vote has been recorded successfully!*"
             
-            # Send confirmation via private message
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
                     text=confirmation_message,
                     parse_mode='Markdown'
                 )
-                
-                # Update the poll message to show it's completed
-                await query.edit_message_text(
-                    f"✅ **Vote Submitted!** ✅\n\n"
-                    f"🎬 You voted for: **{film_title}**\n"
-                    f"👁️ Status: **{status}**\n\n"
-                    f"📱 Check your private messages for detailed confirmation.\n\n"
-                    f"Use /results to see current standings."
-                )
             except Exception as e:
-                # If private message fails, show confirmation in the poll
-                logger.warning(f"Could not send private message to user {user_id}: {e}")
-                await query.edit_message_text(
-                    confirmation_message,
-                    parse_mode='Markdown'
-                )
+                logger.warning(f"Could not send confirmation DM to user {user_id}: {e}")
+            
+            # Update the voting interface to show completion
+            await query.edit_message_text(
+                f"✅ **Vote Submitted!** ✅\n\n"
+                f"🎬 You voted for: **{film_title}**\n"
+                f"👁️ Status: **{status}**\n\n"
+                f"Check your private messages for confirmation."
+            )
+            
+            # Notify the group (without showing the choice)
+            try:
+                # Get the original chat where /vote was called
+                # We need to store this information when the vote command is called
+                if 'vote_chat_id' in session:
+                    await context.bot.send_message(
+                        chat_id=session['vote_chat_id'],
+                        text=f"✅ {user_name} has voted."
+                    )
+            except Exception as e:
+                logger.warning(f"Could not send group notification: {e}")
+            
+            # Clean up the voting session
+            del context.bot_data['voting_sessions'][user_id]
+            
         else:
             await query.edit_message_text(
                 f"❌ **Already Voted!** ❌\n\n"
                 f"You have already voted in this round.\n\n"
                 f"Use /results to see current standings."
             )
+
+
+async def update_voting_interface(query, context, user_id, session):
+    """Update the voting interface to show current marks."""
+    films = bot.get_all_films()
+    round_id, round_name = bot.get_round_info()
     
-    elif data.startswith("info_"):
-        # Show film info
-        film_id = int(data.split("_")[1])
-        film_title = bot.get_film_by_id(film_id)
-        await query.edit_message_text(
-            f"📽️ **{film_title}**\n\n"
-            f"Tap '👁️ Seen' or '❌ Unseen' to vote for this movie!"
-        )
+    poll_message = f"🎬 **{round_name} - Movie Voting** 🎬\n\n"
+    poll_message += "Mark each movie as Seen or Unseen, then vote for ONE movie:\n\n"
+    
+    keyboard = []
+    for i, (film_id, title) in enumerate(films, 1):
+        # Check if this movie is marked
+        mark_status = ""
+        if film_id in session['marks']:
+            if session['marks'][film_id]:
+                mark_status = " ✅"
+            else:
+                mark_status = " ❌"
+        
+        # Add movie option with number and mark status
+        poll_message += f"**{i}.** 🎭 {title}{mark_status}\n"
+        
+        # Add Seen/Unseen buttons for this movie
+        keyboard.append([
+            InlineKeyboardButton(f"Seen ✅", callback_data=f"mark_{film_id}_1"),
+            InlineKeyboardButton(f"Unseen ❌", callback_data=f"mark_{film_id}_0")
+        ])
+        
+        # Add separator between movies (except for last one)
+        if i < len(films):
+            poll_message += "━━━━━━━━━━━━━━━━━━━━\n"
+    
+    # Add vote button at the bottom
+    keyboard.append([
+        InlineKeyboardButton("Vote for this movie 🎯", callback_data="submit_vote")
+    ])
+    
+    poll_message += "\n💡 *Mark each movie's status, then click 'Vote for this movie'*"
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text=poll_message,
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
 
 
 async def results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

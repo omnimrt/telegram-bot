@@ -135,10 +135,9 @@ The bot uses SQLite with three tables:
 Admin: /addfilm The Shawshank Redemption
 Admin: /newround "Movie Night 2024"
 User: /vote
-Bot: [In group] "📱 Poll sent to your private messages! Check your DM to vote for Movie Night 2024."
-Bot: [In DM] "🎬 Movie Night 2024 - Movie Voting Poll 🎬
+Bot: [In DM] "🎬 Movie Night 2024 - Movie Voting 🎬
 
-Choose ONE movie to vote on:
+Mark each movie as Seen or Unseen, then vote for ONE movie:
 
 1. 🎭 The Shawshank Redemption
 ━━━━━━━━━━━━━━━━━━━━
@@ -146,30 +145,29 @@ Choose ONE movie to vote on:
 ━━━━━━━━━━━━━━━━━━━━
 3. 🎭 The Dark Knight
 
-💡 You can only vote for ONE movie per round
+💡 Mark each movie's status, then click 'Vote for this movie'
 
-[Inline buttons: "👁️ Seen" | "❌ Unseen" for each movie]"
+[Seen ✅] [Unseen ❌] buttons for each movie
+[Vote for this movie 🎯] button at bottom"
 
-User: [Taps "👁️ Seen" for The Shawshank Redemption]
+User: [Marks movies and clicks "Vote for this movie 🎯"]
 Bot: [In DM] "✅ Vote Confirmation - Movie Night 2024 ✅
 
 🎬 Movie: The Shawshank Redemption
 👁️ Your Vote: Seen
 
-📊 Current Vote Counts:
-   👁️ Seen: 1 votes
-   ❌ Unseen: 0 votes
-   📈 Total: 1 votes
-
 🎉 Your vote has been recorded successfully!"
+
+Bot: [In group] "✅ John Doe has voted."
 ```
 
 ### Voting Process
 1. Type `/vote` in the group chat
-2. Check your private messages (DM) for the poll
-3. Choose ONE movie and tap "👁️ Seen" or "❌ Unseen"
-4. Get confirmation with current vote counts
-5. You can only vote once per round
+2. Check your private messages (DM) for the voting interface
+3. Mark each movie as "Seen ✅" or "Unseen ❌"
+4. Click "Vote for this movie 🎯" to submit your vote
+5. Get confirmation in DM and group notification
+6. You can only vote once per round
 
 ### Film Management
 - `/addfilm <title>` - Add new films to the database
