@@ -4,25 +4,31 @@ A Python Telegram bot for managing film voting with SQLite database storage. Use
 
 ## Features
 
-- **Film Management**: Add films to the database (admin only)
+- **Clean Poll Interface**: Movies displayed as clear, visually separated poll options
+- **DM-Only Voting**: All voting interactions take place in private messages
 - **Round-Based Voting**: Each user can vote for ONE film per round
-- **Private Vote Confirmations**: Vote confirmations sent via private message (DM)
+- **Vote Counts**: Real-time vote counts shown in confirmations
+- **Film Management**: Add and delete films from the database (admin only)
 - **Scoring System**: 
   - Seen films: 0.5 points
-  - Not seen films: 1.0 points
-- **Results Display**: View all films sorted by score for current round
+  - Unseen films: 1.0 points
+- **Results Display**: Clean, formatted results with separators and emojis
 - **Winner Announcement**: See the top-scoring film with trophy emoji
 - **Round Management**: Admins can create new voting rounds
-- **Inline Buttons**: Easy voting with tap-to-vote buttons
+- **Intuitive UI**: Proper spacing, separators, and visual hierarchy
 
 ## Commands
 
 - `/start` - Welcome message and command list
-- `/addfilm <film name>` - Add a new film (Admin only)
-- `/vote` - Vote for ONE film in the current round
+- `/vote` - Vote for ONE film in the current round (sent to DM)
 - `/results` - Display all films sorted by score for current round
 - `/winner` - Show the top-scoring film for current round
-- `/newround <name>` - Create a new voting round (Admin only)
+- `/listfilms` - List all available films in the database
+
+**Admin Commands:**
+- `/addfilm <film name>` - Add a new film
+- `/deletefilm <film name>` - Delete a film from the database
+- `/newround <name>` - Create a new voting round
 
 ## Setup Instructions
 
@@ -124,11 +130,51 @@ The bot uses SQLite with three tables:
 /addfilm The Dark Knight
 ```
 
-### Voting
-1. Type `/vote` to see all available films for the current round
-2. Choose ONE film and tap "👁️ Seen" or "❌ Not Seen"
-3. The bot will send a confirmation via private message (DM)
-4. You can only vote once per round
+### Complete Voting Flow
+```
+Admin: /addfilm The Shawshank Redemption
+Admin: /newround "Movie Night 2024"
+User: /vote
+Bot: [In group] "📱 Poll sent to your private messages! Check your DM to vote for Movie Night 2024."
+Bot: [In DM] "🎬 Movie Night 2024 - Movie Voting Poll 🎬
+
+Choose ONE movie to vote on:
+
+1. 🎭 The Shawshank Redemption
+━━━━━━━━━━━━━━━━━━━━
+2. 🎭 Pulp Fiction
+━━━━━━━━━━━━━━━━━━━━
+3. 🎭 The Dark Knight
+
+💡 You can only vote for ONE movie per round
+
+[Inline buttons: "👁️ Seen" | "❌ Unseen" for each movie]"
+
+User: [Taps "👁️ Seen" for The Shawshank Redemption]
+Bot: [In DM] "✅ Vote Confirmation - Movie Night 2024 ✅
+
+🎬 Movie: The Shawshank Redemption
+👁️ Your Vote: Seen
+
+📊 Current Vote Counts:
+   👁️ Seen: 1 votes
+   ❌ Unseen: 0 votes
+   📈 Total: 1 votes
+
+🎉 Your vote has been recorded successfully!"
+```
+
+### Voting Process
+1. Type `/vote` in the group chat
+2. Check your private messages (DM) for the poll
+3. Choose ONE movie and tap "👁️ Seen" or "❌ Unseen"
+4. Get confirmation with current vote counts
+5. You can only vote once per round
+
+### Film Management
+- `/addfilm <title>` - Add new films to the database
+- `/deletefilm <title>` - Remove films from the database
+- `/listfilms` - View all available films
 
 ### Round Management
 - `/newround <name>` - Create a new voting round (Admin only)

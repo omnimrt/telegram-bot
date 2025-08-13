@@ -163,6 +163,75 @@ class TestFilmVotingBot:
         results = self.get_results(round_id)
         return results[0] if results else (None, 0.0)
     
+    def get_vote_counts_for_film(self, film_id: int, round_id: int = None):
+        """Get vote counts for a specific film in a round."""
+        if round_id is None:
+            round_id = self.get_active_round()
+        
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        
+        # Get seen votes
+        cursor.execute(
+            "SELECT COUNT(*) FROM votes WHERE film_id = ? AND round_id = ? AND seen = 1",
+            (film_id, round_id)
+        )
+        seen_count = cursor.fetchone()[0]
+        
+        # Get unseen votes
+        cursor.execute(
+            "SELECT COUNT(*) FROM votes WHERE film_id = ? AND round_id = ? AND seen = 0",
+            (film_id, round_id)
+        )
+        unseen_count = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        return {
+            'seen': seen_count,
+            'unseen': unseen_count,
+            'total': seen_count + unseen_count
+        }
+    
+    def delete_film(self, film_id: int) -> bool:
+        """Delete a film and all its associated votes."""
+        try:
+            conn = sqlite3.connect(self.db_name)
+            cursor = conn.cursor()
+            
+            # First, get the film title for logging
+            cursor.execute("SELECT title FROM films WHERE id = ?", (film_id,))
+            result = cursor.fetchone()
+            if not result:
+                conn.close()
+                return False
+            
+            film_title = result[0]
+            
+            # Delete all votes for this film
+            cursor.execute("DELETE FROM votes WHERE film_id = ?", (film_id,))
+            
+            # Delete the film
+            cursor.execute("DELETE FROM films WHERE id = ?", (film_id,))
+            
+            conn.commit()
+            conn.close()
+            
+            print(f"✅ Film '{film_title}' (ID: {film_id}) deleted successfully")
+            return True
+        except Exception as e:
+            print(f"❌ Error deleting film {film_id}: {e}")
+            return False
+    
+    def get_film_id_by_title(self, title: str) -> int:
+        """Get film ID by title (case-insensitive)."""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM films WHERE LOWER(title) = LOWER(?)", (title,))
+        result = cursor.fetchone()
+        conn.close()
+        return result[0] if result else None
+    
     def cleanup(self):
         """Remove test database."""
         if os.path.exists(self.db_name):
@@ -244,6 +313,29 @@ def test_database():
     print("\n7. Testing winner selection...")
     winner_title, winner_score = bot.get_winner()
     print(f"🏆 Winner: {winner_title} with {winner_score:.1f} points")
+    
+    # Test vote counts
+    print("\n8. Testing vote counts...")
+    film_id, title = films[0]
+    vote_counts = bot.get_vote_counts_for_film(film_id)
+    print(f"📊 Vote counts for '{title}': Seen={vote_counts['seen']}, Unseen={vote_counts['unseen']}, Total={vote_counts['total']}")
+    
+    # Test delete functionality
+    print("\n9. Testing delete functionality...")
+    film_id, title = films[1]
+    success = bot.delete_film(film_id)
+    if success:
+        print(f"✅ Successfully deleted: {title}")
+    else:
+        print(f"❌ Failed to delete: {title}")
+    
+    # Test film ID lookup
+    print("\n10. Testing film ID lookup...")
+    film_id = bot.get_film_id_by_title("The Shawshank Redemption")
+    if film_id:
+        print(f"✅ Found film ID: {film_id}")
+    else:
+        print(f"❌ Film not found")
     
     # Cleanup
     bot.cleanup()

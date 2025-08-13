@@ -246,6 +246,75 @@ class FilmVotingBot:
         result = cursor.fetchone()
         conn.close()
         return result if result else (None, None)
+    
+    def get_vote_counts_for_film(self, film_id: int, round_id: int = None) -> Dict[str, int]:
+        """Get vote counts for a specific film in a round."""
+        if round_id is None:
+            round_id = self.get_active_round()
+        
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        
+        # Get seen votes
+        cursor.execute(
+            "SELECT COUNT(*) FROM votes WHERE film_id = ? AND round_id = ? AND seen = 1",
+            (film_id, round_id)
+        )
+        seen_count = cursor.fetchone()[0]
+        
+        # Get unseen votes
+        cursor.execute(
+            "SELECT COUNT(*) FROM votes WHERE film_id = ? AND round_id = ? AND seen = 0",
+            (film_id, round_id)
+        )
+        unseen_count = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        return {
+            'seen': seen_count,
+            'unseen': unseen_count,
+            'total': seen_count + unseen_count
+        }
+    
+    def delete_film(self, film_id: int) -> bool:
+        """Delete a film and all its associated votes."""
+        try:
+            conn = sqlite3.connect(self.db_name)
+            cursor = conn.cursor()
+            
+            # First, get the film title for logging
+            cursor.execute("SELECT title FROM films WHERE id = ?", (film_id,))
+            result = cursor.fetchone()
+            if not result:
+                conn.close()
+                return False
+            
+            film_title = result[0]
+            
+            # Delete all votes for this film
+            cursor.execute("DELETE FROM votes WHERE film_id = ?", (film_id,))
+            
+            # Delete the film
+            cursor.execute("DELETE FROM films WHERE id = ?", (film_id,))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"Film '{film_title}' (ID: {film_id}) deleted successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting film {film_id}: {e}")
+            return False
+    
+    def get_film_id_by_title(self, title: str) -> int:
+        """Get film ID by title (case-insensitive)."""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM films WHERE LOWER(title) = LOWER(?)", (title,))
+        result = cursor.fetchone()
+        conn.close()
+        return result[0] if result else None
 
 
 # Global bot instance
@@ -267,21 +336,31 @@ async def is_user_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a welcome message when the command /start is issued."""
     welcome_text = """
-🎬 Welcome to the Film Voting Bot! 🎬
+🎬 **Welcome to the Film Voting Bot!** 🎬
 
 I help you vote on films and track which ones are most popular.
 
-Available commands:
-• /vote - Vote for ONE film in the current round
-• /results - View all films and their scores for current round
-• /winner - See the top-scoring film for current round
-• /addfilm <title> - Add a new film (Admin only)
-• /newround <name> - Create a new voting round (Admin only)
+**📱 User Commands:**
+• `/vote` - Vote for ONE film in the current round (sent to DM)
+• `/results` - View all films and their scores for current round
+• `/winner` - See the top-scoring film for current round
+• `/listfilms` - List all available films
 
-Get started by typing /vote to see available films!
+**⚙️ Admin Commands:**
+• `/addfilm <title>` - Add a new film
+• `/deletefilm <title>` - Delete a film from the database
+• `/newround <name>` - Create a new voting round
+
+**💡 How to vote:**
+1. Type `/vote` in the group
+2. Check your private messages (DM)
+3. Choose ONE movie and tap "Seen" or "Unseen"
+4. Get confirmation with vote counts
+
+Get started by typing `/vote` to begin voting!
     """
     
-    await update.message.reply_text(welcome_text.strip())
+    await update.message.reply_text(welcome_text.strip(), parse_mode='Markdown')
 
 
 async def add_film(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -303,7 +382,7 @@ async def add_film(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def vote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show all films with voting buttons for the current round."""
+    """Show all films as a clean poll interface in DM."""
     films = bot.get_all_films()
     
     if not films:
@@ -325,23 +404,52 @@ async def vote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     
+    # Create clean poll interface
+    poll_message = f"🎬 **{round_name} - Movie Voting Poll** 🎬\n\n"
+    poll_message += "Choose ONE movie to vote on:\n\n"
+    
     keyboard = []
-    for film_id, title in films:
-        # Show voting buttons for each film
+    for i, (film_id, title) in enumerate(films, 1):
+        # Add movie option with number
+        poll_message += f"**{i}.** 🎭 {title}\n"
+        
+        # Add voting buttons for this movie
         keyboard.append([
-            InlineKeyboardButton("👁️ Seen", callback_data=f"vote_{film_id}_1"),
-            InlineKeyboardButton("❌ Not Seen", callback_data=f"vote_{film_id}_0")
+            InlineKeyboardButton(f"👁️ Seen", callback_data=f"vote_{film_id}_1"),
+            InlineKeyboardButton(f"❌ Unseen", callback_data=f"vote_{film_id}_0")
         ])
-        keyboard.append([
-            InlineKeyboardButton(f"📽️ {title}", callback_data=f"info_{film_id}")
-        ])
+        
+        # Add separator between movies (except for last one)
+        if i < len(films):
+            poll_message += "━━━━━━━━━━━━━━━━━━━━\n"
+    
+    poll_message += "\n💡 *You can only vote for ONE movie per round*"
     
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        f"🎬 Vote for {round_name}!\n\n"
-        f"Choose ONE film to vote on. Tap 'Seen' or 'Not Seen':",
-        reply_markup=reply_markup
-    )
+    
+    # Send poll to user's DM
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=poll_message,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        
+        # Confirm in group that poll was sent
+        await update.message.reply_text(
+            f"📱 **Poll sent to your private messages!**\n\n"
+            f"Check your DM to vote for {round_name}."
+        )
+        
+    except Exception as e:
+        logger.warning(f"Could not send DM to user {user_id}: {e}")
+        # Fallback to group chat if DM fails
+        await update.message.reply_text(
+            poll_message,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -361,36 +469,48 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if bot.add_vote(user_id, film_id, seen):
             film_title = bot.get_film_by_id(film_id)
             round_id, round_name = bot.get_round_info()
-            status = "Seen" if seen else "Not Seen"
+            status = "Seen" if seen else "Unseen"
+            
+            # Get current vote counts for this movie
+            vote_counts = bot.get_vote_counts_for_film(film_id, round_id)
+            
+            # Create confirmation message with vote counts
+            confirmation_message = f"✅ **Vote Confirmation - {round_name}** ✅\n\n"
+            confirmation_message += f"🎬 **Movie:** {film_title}\n"
+            confirmation_message += f"👁️ **Your Vote:** {status}\n\n"
+            confirmation_message += "📊 **Current Vote Counts:**\n"
+            confirmation_message += f"   👁️ Seen: {vote_counts['seen']} votes\n"
+            confirmation_message += f"   ❌ Unseen: {vote_counts['unseen']} votes\n"
+            confirmation_message += f"   📈 Total: {vote_counts['total']} votes\n\n"
+            confirmation_message += "🎉 *Your vote has been recorded successfully!*"
             
             # Send confirmation via private message
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=f"✅ Vote Confirmation for {round_name}!\n\n"
-                         f"🎬 Film: {film_title}\n"
-                         f"👁️ Status: {status}\n\n"
-                         f"Your vote has been recorded successfully!"
+                    text=confirmation_message,
+                    parse_mode='Markdown'
                 )
                 
-                # Update the group message to show vote was recorded
+                # Update the poll message to show it's completed
                 await query.edit_message_text(
-                    f"✅ Vote recorded for {round_name}!\n\n"
-                    f"📱 Check your private messages for confirmation.\n\n"
+                    f"✅ **Vote Submitted!** ✅\n\n"
+                    f"🎬 You voted for: **{film_title}**\n"
+                    f"👁️ Status: **{status}**\n\n"
+                    f"📱 Check your private messages for detailed confirmation.\n\n"
                     f"Use /results to see current standings."
                 )
             except Exception as e:
-                # If private message fails, show confirmation in group
+                # If private message fails, show confirmation in the poll
                 logger.warning(f"Could not send private message to user {user_id}: {e}")
                 await query.edit_message_text(
-                    f"✅ Vote recorded for {round_name}!\n\n"
-                    f"🎬 Film: {film_title}\n"
-                    f"👁️ Status: {status}\n\n"
-                    f"Use /results to see current standings."
+                    confirmation_message,
+                    parse_mode='Markdown'
                 )
         else:
             await query.edit_message_text(
-                f"❌ You have already voted in this round!\n\n"
+                f"❌ **Already Voted!** ❌\n\n"
+                f"You have already voted in this round.\n\n"
                 f"Use /results to see current standings."
             )
     
@@ -399,8 +519,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         film_id = int(data.split("_")[1])
         film_title = bot.get_film_by_id(film_id)
         await query.edit_message_text(
-            f"📽️ {film_title}\n\n"
-            f"Tap 'Seen' or 'Not Seen' to vote!"
+            f"📽️ **{film_title}**\n\n"
+            f"Tap '👁️ Seen' or '❌ Unseen' to vote for this movie!"
         )
 
 
@@ -413,15 +533,20 @@ async def results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("📝 No films available. Ask an admin to add some films!")
         return
     
-    message = f"🏆 Film Voting Results - {round_name} 🏆\n\n"
+    message = f"📊 **{round_name} - Voting Results** 📊\n\n"
     
     for i, (title, score) in enumerate(results, 1):
         trophy = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "📊"
-        message += f"{trophy} {title}: {score:.1f} points\n"
+        message += f"{trophy} **{title}**\n"
+        message += f"   📈 **{score:.1f} points**\n"
+        
+        # Add separator between movies (except for last one)
+        if i < len(results):
+            message += "━━━━━━━━━━━━━━━━━━━━\n"
     
-    message += f"\n💡 Scoring: Seen = 0.5 points, Not Seen = 1.0 points"
+    message += f"\n💡 *Scoring: Seen = 0.5 points, Unseen = 1.0 points*"
     
-    await update.message.reply_text(message)
+    await update.message.reply_text(message, parse_mode='Markdown')
 
 
 async def winner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -433,12 +558,12 @@ async def winner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("📝 No films available. Ask an admin to add some films!")
         return
     
-    message = f"🏆 WINNER - {round_name} 🏆\n\n"
-    message += f"👑 {winner_title}\n"
-    message += f"📊 Score: {winner_score:.1f} points\n\n"
-    message += f"🎉 Congratulations to the winning film!"
+    message = f"🏆 **{round_name} - WINNER** 🏆\n\n"
+    message += f"👑 **{winner_title}**\n"
+    message += f"📊 **{winner_score:.1f} points**\n\n"
+    message += f"🎉 *Congratulations to the winning film!*"
     
-    await update.message.reply_text(message)
+    await update.message.reply_text(message, parse_mode='Markdown')
 
 
 async def new_round(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -459,6 +584,46 @@ async def new_round(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ Could not create new round '{round_name}'.")
 
 
+async def delete_film(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Delete a film from the database (Admin only)."""
+    if not await is_user_admin(update, context):
+        await update.message.reply_text("❌ Sorry, only admins can delete films.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Please provide a film title: /deletefilm <film title>")
+        return
+    
+    film_title = " ".join(context.args)
+    film_id = bot.get_film_id_by_title(film_title)
+    
+    if not film_id:
+        await update.message.reply_text(f"❌ Film '{film_title}' not found in the database.")
+        return
+    
+    if bot.delete_film(film_id):
+        await update.message.reply_text(f"✅ Film '{film_title}' deleted successfully!")
+    else:
+        await update.message.reply_text(f"❌ Could not delete film '{film_title}'.")
+
+
+async def list_films(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List all films in the database."""
+    films = bot.get_all_films()
+    
+    if not films:
+        await update.message.reply_text("📝 No films available in the database.")
+        return
+    
+    message = "🎬 **Available Films:**\n\n"
+    for i, (film_id, title) in enumerate(films, 1):
+        message += f"**{i}.** {title}\n"
+    
+    message += f"\n📊 Total: {len(films)} films"
+    
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+
 def main() -> None:
     """Start the bot."""
     # Create the Application
@@ -467,6 +632,8 @@ def main() -> None:
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("addfilm", add_film))
+    application.add_handler(CommandHandler("deletefilm", delete_film))
+    application.add_handler(CommandHandler("listfilms", list_films))
     application.add_handler(CommandHandler("vote", vote))
     application.add_handler(CommandHandler("results", results))
     application.add_handler(CommandHandler("winner", winner))
